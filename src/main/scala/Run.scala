@@ -10,9 +10,10 @@ import zio.{ZIO, ZLayer}
 import zio.ZIOAppDefault
 import io.quartz.QuartzH2Server
 import io.quartz.http2._
-import io.quartz.http2.model.{Method, Request, Response}
+import io.quartz.http2.model.{Method, Request, Response, ContentType}
 import io.quartz.http2.model.Method._
-import io.quartz.http2.routes.WebFilter
+import io.quartz.http2.routes.{WebFilter, HttpRouteIO}
+import zio.stream.ZStream
 
 import io.quartz.grpc.Router
 import io.quartz.grpc.TraitMethodFinder
@@ -49,7 +50,23 @@ object Run extends ZIOAppDefault {
       Either.cond(true, r, Response.Error(StatusCode.Forbidden).asText("Access denied to: " + r.uri.getPath()))
     )
 
-  
+  // HTTP/2 routes - includes the doc/index.html handler from Run.txt
+  val httpRoutes: HttpRouteIO[Any] = {
+    case GET -> "doc" /: remainingPath =>
+      val FOLDER_PATH = "web_root/"
+      val FILE = if (remainingPath.toString.isEmpty) "index.html" else remainingPath.toString
+      val BLOCK_SIZE = 1024 * 14
+      for {
+        jpath <- ZIO.attempt(new java.io.File(FOLDER_PATH + FILE))
+        present <- ZIO.attempt(jpath.exists())
+        _ <- ZIO.fail(new java.io.FileNotFoundException(jpath.toString())).when(present == false)
+      } yield (Response
+        .Ok()
+        .asStream(ZStream.fromFile(jpath, BLOCK_SIZE))
+        .contentType(ContentType.contentTypeFromFileName(FILE)))
+  }
+
+
 
   def run = {
     val env = ZLayer.fromZIO(ZIO.succeed("Hello"))
@@ -75,15 +92,20 @@ object Run extends ZIOAppDefault {
 
       x <- ZIO.attempt(TraitMethodFinder.getAllMethods[GreeterService])
 
-      grpcIO <- ZIO.succeed(
+      router <- ZIO.succeed(
           Router[GreeterService](
             service,
             sd,
             x,
-          ).getIO
+          )
         )
 
-      exitCode <- new QuartzH2Server("localhost", 8443, 16000, ctx).start(grpcIO, sync = false)
+      grpcIO = router.getIO
+
+      // Combine HTTP/2 routes with gRPC routes under unified filter
+      combinedRoute = router.combine(httpRoutes, grpcIO, filter)
+
+      exitCode <- new QuartzH2Server("localhost", 8443, 16000, ctx).start(combinedRoute, sync = false)
 
       // For Linux IO-Uring support, comment out the line above and uncomment the line below
       // exitCode <- new QuartzH2Server("localhost", 8443, 16000, ctx).startIO_linuxOnly(1, R, filter)

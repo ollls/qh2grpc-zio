@@ -5,8 +5,7 @@ import io.grpc.ServerServiceDefinition
 import io.grpc.Metadata
 import io.quartz.http2.model.{Headers, Request, Response}
 import scala.jdk.CollectionConverters._
-import io.quartz.http2.routes.HttpRoute
-import io.quartz.http2.routes.WebFilter
+import io.quartz.http2.routes.{HttpRoute, HttpRouteIO, WebFilter}
 import scalapb.GeneratedMessage
 import zio.{Task,ZIO}
 import zio.stream.Stream
@@ -153,5 +152,34 @@ class Router[T](
 
     }
 
+  }
+
+  /** Combines HTTP/2 routes with gRPC routes under a unified filter.
+    *
+    * @param pf
+    *   Partial function for HTTP/2 routes
+    * @param grpcRoute
+    *   Already lifted gRPC HttpRoute (from getIO)
+    * @param filter
+    *   WebFilter to apply to all requests
+    * @return
+    *   Combined HttpRoute that handles both HTTP/2 and gRPC requests
+    */
+  def combine[Env](
+      pf: HttpRouteIO[Env],
+      grpcRoute: HttpRoute[Env],
+      filter: WebFilter[Env]
+  ): HttpRoute[Env] = { (r0: Request) =>
+    filter(r0).flatMap {
+      case Left(response) =>
+        ZIO.logWarning(
+          s"Web filter denied access with response code ${response.code}"
+        ) *> ZIO.succeed(Some(response))
+      case Right(request) =>
+        pf.lift(request) match {
+          case Some(c) => c.flatMap(r => ZIO.succeed(Some(r)))
+          case None    => grpcRoute(request)
+        }
+    }
   }
 }
