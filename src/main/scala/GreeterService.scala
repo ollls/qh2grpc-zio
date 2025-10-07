@@ -1,7 +1,7 @@
 package com.example
 
 import zio.{ZIO, IO}
-import zio.stream.{Stream, ZStream}
+import zio.stream.ZStream
 import com.example.protos.orders._
 
 
