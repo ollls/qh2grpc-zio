@@ -8,7 +8,6 @@ import java.io.ByteArrayInputStream
 import io.grpc.ServerMethodDefinition
 import io.grpc.MethodDescriptor.Marshaller
 import scala.quoted.*
-import scala.util.Try
 import io.grpc.Status
 import zio.Chunk
 import zio.stream.ZStream
@@ -53,13 +52,6 @@ object Utils {
       )
       rm <- ZIO.succeed(d.getMethodDescriptor().getRequestMarshaller())
 
-
-      _ <- ZIO.debug( "******************************>>>>> " + methodName )
-
-      _ <- ZIO.debug( "******************************>>>>> map size = " + method_map.size )
-
-      _ <- ZIO.debug( "******************************>>>>> " + method_map.keySet.mkString(" # "))
-
       method : io.quartz.grpc.MethodRefBase[svcT] <- ZIO.fromOption(method_map.get(methodName))
         .orElseFail(new NoSuchElementException(
           s"Unexpected error: scala macro method Map: GRPC Service method not found: $methodName"
@@ -72,7 +64,7 @@ object Utils {
               .map(_.toArray)
             req <- ZIO.succeed(rm.parse(new ByteArrayInputStream(extractRequest(req0))))
 
-            response <- m(svc)(req, ctx)
+            response <- m(svc)(req)
               .map(r => {
                 r.writeTo(Utils.sizeResponse(r.serializedSize, outputStream))
                 outputStream.toByteArray
@@ -86,7 +78,7 @@ object Utils {
               .map(_.toArray)
             req <- ZIO.succeed(rm.parse(new ByteArrayInputStream(extractRequest(req0))))
 
-            response <- ZIO.succeed(m(svc)(req, ctx).map(r => {
+            response <- ZIO.succeed(m(svc)(req).map(r => {
               r.writeTo(Utils.sizeResponse(r.serializedSize, outputStream))
               outputStream.toByteArray
             }))
@@ -95,7 +87,7 @@ object Utils {
         case MethodStreamToUnary[svcT](m) =>
           for {
             req <- ZIO.succeed(byteStreamToMessageStream(request, rm))
-            response <- m(svc)(req, ctx)
+            response <- m(svc)(req)
               .map(r => {
                 r.writeTo(Utils.sizeResponse(r.serializedSize, outputStream))
                 outputStream.toByteArray
@@ -106,7 +98,7 @@ object Utils {
         case MethodStreamToStream(m) =>
           for {
             req <- ZIO.succeed(byteStreamToMessageStream(request, rm))
-            response <- ZIO.succeed(m(svc)(req, ctx).map(r => {
+            response <- ZIO.succeed(m(svc)(req).map(r => {
               r.writeTo(Utils.sizeResponse(r.serializedSize, outputStream))
               outputStream.toByteArray
             }))

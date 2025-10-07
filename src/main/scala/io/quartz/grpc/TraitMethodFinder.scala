@@ -1,8 +1,6 @@
 package io.quartz.grpc
-import zio.{ZIO, Task}
+import zio.Task
 import scalapb.GeneratedMessage
-
-import io.grpc.Metadata
 
 import scala.quoted.*
 
@@ -13,22 +11,19 @@ import zio.stream.ZStream
 class MethodRefBase[T]
 
 case class MethodUnaryToUnary[T](
-    value: T => (GeneratedMessage, Metadata) => Task[GeneratedMessage]
+    value: T => GeneratedMessage => Task[GeneratedMessage]
 ) extends MethodRefBase[T]
 
 case class MethodUnaryToStream[T](
-    value: T => (GeneratedMessage, Metadata) => ZStream[Any, Throwable, GeneratedMessage]
+    value: T => GeneratedMessage => ZStream[Any, Throwable, GeneratedMessage]
 ) extends MethodRefBase[T]
 
 case class MethodStreamToUnary[T](
-    value: T => (ZStream[Any, Throwable, GeneratedMessage], Metadata) => Task[GeneratedMessage]
+    value: T => ZStream[Any, Throwable, GeneratedMessage] => Task[GeneratedMessage]
 ) extends MethodRefBase[T]
 
 case class MethodStreamToStream[T](
-    value: T => (
-        ZStream[Any, Throwable, GeneratedMessage],
-        Metadata
-    ) => ZStream[Any, Throwable, GeneratedMessage]
+    value: T => ZStream[Any, Throwable, GeneratedMessage] => ZStream[Any, Throwable, GeneratedMessage]
 ) extends MethodRefBase[T]
 
 /*
@@ -51,7 +46,7 @@ object TraitMethodFinder {
     val tpe = TypeRepr.of[T]
     val matchingMethods = tpe.typeSymbol.declarations.filter { m =>
       m.isDefDef &&
-      m.paramSymss.flatten.size == 2 &&
+      m.paramSymss.flatten.size == 1 &&
       m.paramSymss.flatten.head.typeRef <:< TypeRepr.of[GeneratedMessage] &&
       m.tree.asInstanceOf[DefDef].returnTpt.tpe <:< TypeRepr
         .of[Task[GeneratedMessage]]
@@ -66,7 +61,7 @@ object TraitMethodFinder {
             methodMap.put(
               $methodName,
               MethodUnaryToUnary((obj: T) =>
-                (messageParam: GeneratedMessage, metadataParam: Metadata) =>
+                (messageParam: GeneratedMessage) =>
                   ${
                     val castedParam = Typed(
                       '{ messageParam }.asTerm,
@@ -74,7 +69,7 @@ object TraitMethodFinder {
                     )
                     Apply(
                       Select('{ obj }.asTerm, method),
-                      List(castedParam, '{ metadataParam }.asTerm)
+                      List(castedParam)
                     ).asExprOf[Task[GeneratedMessage]]
                   }
               )
@@ -97,7 +92,7 @@ object TraitMethodFinder {
     val tpe = TypeRepr.of[T]
     val matchingMethods = tpe.typeSymbol.declarations.filter { m =>
       m.isDefDef &&
-      m.paramSymss.flatten.size == 2 &&
+      m.paramSymss.flatten.size == 1 &&
       m.paramSymss.flatten.head.typeRef <:< TypeRepr.of[GeneratedMessage] &&
       m.tree.asInstanceOf[DefDef].returnTpt.tpe <:< TypeRepr
         .of[ZStream[Any, Throwable, GeneratedMessage]]
@@ -112,7 +107,7 @@ object TraitMethodFinder {
             methodMap.put(
               $methodName,
               MethodUnaryToStream((obj: T) =>
-                (messageParam: GeneratedMessage, metadataParam: Metadata) =>
+                (messageParam: GeneratedMessage) =>
                   ${
                     val castedParam = Typed(
                       '{ messageParam }.asTerm,
@@ -120,7 +115,7 @@ object TraitMethodFinder {
                     )
                     Apply(
                       Select('{ obj }.asTerm, method),
-                      List(castedParam, '{ metadataParam }.asTerm)
+                      List(castedParam)
                     ).asExprOf[ZStream[Any, Throwable,GeneratedMessage]]
                   }
               )
@@ -143,7 +138,7 @@ object TraitMethodFinder {
     val tpe = TypeRepr.of[T]
     val matchingMethods = tpe.typeSymbol.declarations.filter { m =>
       m.isDefDef &&
-      m.paramSymss.flatten.size == 2 &&
+      m.paramSymss.flatten.size == 1 &&
       m.paramSymss.flatten.head.typeRef <:< TypeRepr
         .of[ZStream[Any, Throwable, GeneratedMessage]] &&
       m.tree.asInstanceOf[DefDef].returnTpt.tpe <:< TypeRepr
@@ -159,10 +154,7 @@ object TraitMethodFinder {
             methodMap.put(
               $methodName,
               MethodStreamToUnary((obj: T) =>
-                (
-                    streamParam: ZStream[Any, Throwable, GeneratedMessage],
-                    metadataParam: Metadata
-                ) =>
+                (streamParam: ZStream[Any, Throwable, GeneratedMessage]) =>
                   ${
                     val castedParam = Typed(
                       '{ streamParam }.asTerm,
@@ -170,7 +162,7 @@ object TraitMethodFinder {
                     )
                     Apply(
                       Select('{ obj }.asTerm, method),
-                      List(castedParam, '{ metadataParam }.asTerm)
+                      List(castedParam)
                     ).asExprOf[Task[GeneratedMessage]]
                   }
               )
@@ -194,10 +186,9 @@ object TraitMethodFinder {
     val tpe = TypeRepr.of[T]
     val matchingMethods = tpe.typeSymbol.declarations.filter { m =>
       m.isDefDef &&
-      m.paramSymss.flatten.size == 2 &&
+      m.paramSymss.flatten.size == 1 &&
       m.paramSymss.flatten.head.typeRef <:< TypeRepr
         .of[ZStream[Any, Throwable, GeneratedMessage]] &&
-      m.paramSymss.flatten.last.typeRef <:< TypeRepr.of[Metadata] &&
       m.tree.asInstanceOf[DefDef].returnTpt.tpe <:< TypeRepr
         .of[ZStream[Any, Throwable, GeneratedMessage]]
     }
@@ -211,10 +202,7 @@ object TraitMethodFinder {
             methodMap.put(
               $methodName,
               MethodStreamToStream((obj: T) =>
-                (
-                    streamParam: ZStream[Any, Throwable, GeneratedMessage],
-                    metadataParam: Metadata
-                ) =>
+                (streamParam: ZStream[Any, Throwable, GeneratedMessage]) =>
                   ${
                     val castedParam = Typed(
                       '{ streamParam }.asTerm,
@@ -222,7 +210,7 @@ object TraitMethodFinder {
                     )
                     Apply(
                       Select('{ obj }.asTerm, method),
-                      List(castedParam, '{ metadataParam }.asTerm)
+                      List(castedParam)
                     ).asExprOf[ZStream[Any, Throwable, GeneratedMessage]]
                   }
               )

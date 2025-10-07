@@ -75,8 +75,6 @@ object Run extends ZIOAppDefault {
 
       x <- ZIO.attempt(TraitMethodFinder.getAllMethods[GreeterService])
 
-      _ <- ZIO.debug( s"Found: ${x.size} methods" )
-
       grpcIO <- ZIO.succeed(
           Router[GreeterService](
             service,

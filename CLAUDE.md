@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a ZIO Quartz H2 HTTP/2 and gRPC server example project written in Scala 3. The project demonstrates high-performance HTTP/2 server implementations using the ZIO Quartz H2 library with support for both Java NIO and Linux IO-Uring backends.
+This is a lightweight gRPC-over-HTTP/2 framework written in Scala 3 that implements gRPC protocol support **without** using Google's standard `ServerBuilder` infrastructure. Instead, it provides native gRPC support directly within a high-performance ZIO Quartz H2 HTTP/2 server, supporting both Java NIO and Linux IO-Uring backends.
+
+**Key Innovation:** Implements gRPC as HTTP/2 request handlers rather than running a separate gRPC server stack, enabling unified HTTP/2 and gRPC endpoints with minimal overhead.
 
 **Key Technology Stack:**
 - Scala 3.3.3
@@ -73,13 +75,15 @@ The project implements a custom gRPC-over-HTTP/2 integration using compile-time 
    - Integrates WebFilter for request filtering
 
 2. **TraitMethodFinder** (`io/quartz/grpc/TraitMethodFinder.scala`): Compile-time macro that:
-   - Introspects gRPC service traits at compile time
+   - Introspects gRPC service traits at compile time using Scala 3 macros
    - Generates method maps for all 4 gRPC method types:
-     - Unary to Unary
-     - Unary to Stream
-     - Stream to Unary
-     - Stream to Stream
+     - **Unary to Unary**: `(request: GeneratedMessage) => Task[GeneratedMessage]`
+     - **Unary to Stream**: `(request: GeneratedMessage) => ZStream[Any, Throwable, GeneratedMessage]`
+     - **Stream to Unary**: `(request: ZStream[...]) => Task[GeneratedMessage]`
+     - **Stream to Stream**: `(request: ZStream[...]) => ZStream[Any, Throwable, GeneratedMessage]`
    - Creates type-safe method references using Scala 3 quoted expressions
+   - Uses `scalapb.GeneratedMessage` base type for framework generality (works with any service)
+   - Discovers methods by inspecting parameter count, types, and return types at compile time
 
 3. **Utils** (`io/quartz/grpc/Utils.scala`): Protocol handling utilities:
    - `process01`: Dispatches requests to correct method type handler
@@ -118,32 +122,190 @@ val filter: WebFilter[Any] = (r: Request) =>
 
 ### Service Implementation
 
-Service implementations extend generated ZIO gRPC traits (e.g., `ZioOrders.Greeter`) and override methods with ZIO effect signatures. See `GreeterService.scala` for examples of all 4 gRPC method types.
+Service implementations extend generated ZIO gRPC traits (e.g., `ZioOrders.Greeter`) and override methods with ZIO effect signatures.
+
+**Important:** Services use **1-parameter methods** (just the request), not 2-parameter methods (request + Metadata). The framework's `TraitMethodFinder` macro looks for methods with single parameters that are subtypes of `scalapb.GeneratedMessage`.
+
+Example from `GreeterService.scala`:
+```scala
+class GreeterService extends ZioOrders.Greeter {
+  // Unary to Unary
+  override def sayHello(request: HelloRequest): IO[StatusException, HelloReply] = {
+    ZIO.succeed(HelloReply(Some(s"Hello, ${request.getName}!")))
+  }
+
+  // Unary to Stream
+  override def lotsOfReplies(request: HelloRequest): ZStream[Any, StatusException, HelloReply] = {
+    ZStream(HelloReply(Some("Reply 1")), HelloReply(Some("Reply 2")))
+  }
+
+  // Stream to Unary
+  override def lotsOfGreetings(
+    request: ZStream[Any, StatusException, HelloRequest]
+  ): IO[StatusException, HelloReply] = {
+    request.runFold("")((acc, req) => acc + "," + req.getName)
+      .map(names => HelloReply(Some(names)))
+  }
+
+  // Stream to Stream (bidirectional)
+  override def bidiHello(
+    request: ZStream[Any, StatusException, HelloRequest]
+  ): ZStream[Any, StatusException, HelloReply] = {
+    request.map(req => HelloReply(Some(req.getName)))
+  }
+}
+```
 
 ## Project Structure
 
 ```
-zio-qh2-examples/
+qh2grpc-zio/
 ├── src/main/
 │   ├── scala/
-│   │   ├── Run.scala                    # Main application entry point
-│   │   ├── GreeterService.scala         # gRPC service implementation
-│   │   └── io/quartz/grpc/              # gRPC integration layer
-│   ├── protobuf/                        # Protocol buffer definitions
-│   └── resources/                       # Runtime resources (keystore, etc.)
-├── web_root/                            # Static files served via HTTP/2
-├── build.sbt                            # SBT build configuration
-└── project/
-    ├── plugins.sbt                      # SBT plugins (protoc, pgp)
-    └── Dependencies.scala               # Dependency definitions
+│   │   ├── Run.scala                        # Main application entry point
+│   │   ├── GreeterService.scala             # Example gRPC service implementation
+│   │   └── io/quartz/grpc/                  # gRPC integration framework
+│   │       ├── Router.scala                 # HTTP/2 to gRPC routing
+│   │       ├── TraitMethodFinder.scala      # Compile-time method discovery
+│   │       └── Utils.scala                  # Protocol handling utilities
+│   ├── protobuf/
+│   │   └── orders.proto                     # Example protobuf definitions
+│   └── resources/                           # Runtime resources (keystore, etc.)
+├── web_root/                                # Static files served via HTTP/2
+├── build.sbt                                # SBT build configuration
+├── project/
+│   ├── plugins.sbt                          # SBT plugins (protoc, pgp)
+│   └── Dependencies.scala                   # Dependency definitions
+├── INTRO.md                                 # Framework introduction and motivation
+└── CLAUDE.md                                # This file (AI assistant guidance)
 ```
+
+## How to Add a New gRPC Service
+
+1. **Define your protobuf** in `src/main/protobuf/yourservice.proto`:
+   ```protobuf
+   syntax = "proto3";
+   package com.example.protos;
+
+   service YourService {
+     rpc YourMethod(YourRequest) returns (YourReply) {}
+   }
+   ```
+
+2. **Compile protobuf**: Run `sbt compile` to generate ZIO gRPC traits
+
+3. **Implement the service**:
+   ```scala
+   class YourServiceImpl extends ZioYourService.YourService {
+     override def yourMethod(request: YourRequest): IO[StatusException, YourReply] = {
+       ZIO.succeed(YourReply(...))
+     }
+   }
+   ```
+
+4. **Register in Run.scala**:
+   ```scala
+   val service = new YourServiceImpl()
+   val methodMap = TraitMethodFinder.getAllMethods[YourServiceImpl]
+
+   for {
+     serverDef <- ZioYourService.YourService.genericBindable.bind(service)
+     router = Router(service, serverDef, methodMap)
+     _ <- server.addRoute("/com.example.protos.YourService/*", router.getIO)
+   } yield ()
+   ```
+
+## Framework Design Principles
+
+1. **Zero Google gRPC Server Dependency**: Uses only the gRPC model classes (`Metadata`, `Status`, etc.) but not `ServerBuilder` or Netty transport
+2. **Compile-Time Safety**: All method discovery happens at compile time via Scala 3 macros
+3. **Generic Message Handling**: Framework operates on `scalapb.GeneratedMessage` base type, making it work with any protobuf service
+4. **ZIO-Native**: Full integration with ZIO effects and streams, no Future-based APIs
+5. **HTTP/2 First**: gRPC implemented as HTTP/2 routes, not a separate server
 
 ## SSL/TLS Configuration
 
 The server requires a JKS keystore file. Expected location and credentials:
-- Path: `keystore.jks` (in `zio-qh2-examples/`)
+- Path: `keystore.jks` (in project root)
 - Password: `password`
 - Type: JKS
 - Protocol: TLS
 
 See `QuartzH2Server.buildSSLContext("TLS", "keystore.jks", "password")` in `Run.scala`.
+
+## Testing the gRPC Server
+
+### Automated Test Script
+
+A comprehensive test script is included that validates all 4 gRPC communication patterns:
+
+```bash
+# Start the server in one terminal
+sbt run
+
+# Run the test script in another terminal
+./test-grpc.sh
+```
+
+The [test-grpc.sh](test-grpc.sh) script automatically tests:
+- **Unary to Unary** (`SayHello`): Single request/response
+- **Unary to Stream** (`LotsOfReplies`): Single request, streaming response
+- **Stream to Unary** (`LotsOfGreetings`): Streaming request, single response
+- **Stream to Stream** (`BidiHello`): Bidirectional streaming
+
+The script provides color-coded output, detailed descriptions, and validates expected behavior for each method.
+
+### Manual Testing with grpcurl
+
+You can also test individual methods manually:
+
+**Unary to Unary:**
+```bash
+grpcurl -v -insecure -proto src/main/protobuf/orders.proto \
+  -d '{"name": "John The Cube Jr", "number": 101}' \
+  localhost:8443 com.example.protos.Greeter/SayHello
+```
+
+**Unary to Stream:**
+```bash
+grpcurl -v -insecure -proto src/main/protobuf/orders.proto \
+  -d '{"name": "Alice", "number": 42}' \
+  localhost:8443 com.example.protos.Greeter/LotsOfReplies
+```
+
+**Stream to Unary:**
+```bash
+grpcurl -v -insecure -proto src/main/protobuf/orders.proto \
+  -d @ localhost:8443 com.example.protos.Greeter/LotsOfGreetings <<EOF
+{"name": "Bob"}
+{"name": "Charlie"}
+{"name": "Dave"}
+EOF
+```
+
+**Stream to Stream (Bidirectional):**
+```bash
+grpcurl -v -insecure -proto src/main/protobuf/orders.proto \
+  -d @ localhost:8443 com.example.protos.Greeter/BidiHello <<EOF
+{"name": "Emma", "number": 1}
+{"name": "Frank", "number": 2}
+{"name": "Grace", "number": 3}
+EOF
+```
+
+**Expected output:** The server logs will show "Found: 4 methods" at startup, confirming all gRPC methods were discovered by the compile-time macro.
+
+## Troubleshooting
+
+**Issue: "Found: 0 methods" at startup**
+- **Cause**: `TraitMethodFinder` didn't find any methods matching the expected signatures
+- **Solution**: Verify service methods have exactly 1 parameter (request only, no Metadata parameter)
+- **Check**: Methods must have return types matching `Task[GeneratedMessage]` or `ZStream[Any, Throwable, GeneratedMessage]`
+
+**Issue: gRPC client receives INTERNAL error**
+- **Cause**: Exception thrown in service method
+- **Solution**: Check server logs for stack trace, ensure proper error handling with `IO[StatusException, _]`
+
+**Issue: Protobuf not compiling**
+- **Cause**: SBT plugin misconfiguration
+- **Solution**: Run `sbt clean compile` to regenerate protobuf code
